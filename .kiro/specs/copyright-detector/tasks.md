@@ -1,0 +1,126 @@
+# Implementation Plan
+
+- [x] 1. Set up project structure and Docker configuration
+  - [x] 1.1 Initialize Node.js project with TypeScript and create directory structure
+    - Create package.json with dependencies: express, sharp, fluent-ffmpeg, pg, multer, @huggingface/inference
+    - Set up TypeScript configuration
+    - Create server/, client/, copyrighted-content/, and test-uploads/ directories
+    - _Requirements: 7.1, 7.2_
+  - [x] 1.2 Create Docker configuration files
+    - Write Dockerfile with Node.js 20 Alpine base, FFmpeg installation
+    - Write docker-compose.yml with PostgreSQL pgvector and app services
+    - Configure environment variables for DATABASE_URL and API keys
+    - _Requirements: 7.1, 7.2, 7.3, 7.4_
+  - [x] 1.3 Create database initialization module
+    - Implement connection pool setup with pg
+    - Create initDatabase function to enable pgvector extension
+    - Create copyrighted_content table with VECTOR column
+    - Create HNSW index on embedding column
+    - _Requirements: 5.3, 5.4_
+
+- [x] 2. Implement image processing service
+  - [x] 2.1 Create image processor module with Sharp
+    - Implement processImage function accepting Buffer and mimeType
+    - Add format validation for JPEG, PNG, WebP, AVIF
+    - Implement resize to max 512x512 maintaining aspect ratio
+    - Convert output to JPEG at 90% quality
+    - _Requirements: 1.1, 1.2, 1.3, 1.4_
+  - [ ]* 2.2 Write property tests for image processor
+    - **Property 1: Supported format acceptance**
+    - **Property 2: AVIF to JPEG conversion**
+    - **Property 3: Image dimension constraint**
+    - **Validates: Requirements 1.1, 1.2, 1.3, 1.4**
+
+- [x] 3. Implement video processing service
+  - [x] 3.1 Create video processor module with FFmpeg
+    - Implement extractKeyFrames function accepting video buffer
+    - Extract frames at 10%, 30%, 50%, 70%, 90% timestamps
+    - Resize frames to 512px width maintaining aspect ratio
+    - Handle temporary file creation and cleanup
+    - _Requirements: 2.1, 2.2, 2.3, 2.4_
+  - [ ]* 3.2 Write property tests for video processor
+    - **Property 4: Video frame extraction count**
+    - **Property 5: Video frame dimension constraint**
+    - **Validates: Requirements 2.1, 2.2**
+
+- [x] 4. Implement embedding service
+  - [x] 4.1 Create embedding service module
+    - Implement generateEmbedding function using Hugging Face CLIP API
+    - Configure fallback to Gemini embedding API
+    - Return vector array of appropriate dimensions
+    - _Requirements: 3.1_
+  - [x] 4.2 Implement embedding serialization utilities
+    - Create serializeEmbedding function (vector to JSON string)
+    - Create deserializeEmbedding function (JSON string to vector)
+    - _Requirements: 3.5, 3.6_
+  - [ ]* 4.3 Write property tests for embedding service
+    - **Property 7: Embedding dimension validity**
+    - **Property 10: Embedding serialization round-trip**
+    - **Validates: Requirements 3.1, 3.5, 3.6**
+
+- [x] 5. Implement similarity checker service
+  - [x] 5.1 Create similarity checker module
+    - Implement findSimilarContent function with pgvector cosine query
+    - Filter results by threshold (default 0.85)
+    - Order by similarity descending, limit to 3 results
+    - _Requirements: 3.2, 3.3, 3.4_
+  - [x] 5.2 Implement status classification logic
+    - Create determineStatus function based on highest similarity
+    - Return "flagged" if max similarity > 0.85, else "safe"
+    - _Requirements: 4.1, 4.2_
+  - [ ]* 5.3 Write property tests for similarity checker
+    - **Property 8: Similarity threshold filtering**
+    - **Property 9: Result ordering and limit**
+    - **Property 11: Flagged status classification**
+    - **Property 12: Safe status classification**
+    - **Validates: Requirements 3.3, 3.4, 4.1, 4.2**
+
+- [x] 6. Checkpoint - Ensure all tests pass
+  - Ensure all tests pass, ask the user if questions arise.
+
+- [x] 7. Implement upload API endpoint
+  - [x] 7.1 Create Express server with upload route
+    - Set up Express app with multer for multipart uploads
+    - Create POST /upload endpoint
+    - Implement file type detection and routing to image/video processor
+    - _Requirements: 1.1, 2.1_
+  - [x] 7.2 Implement upload processing pipeline
+    - Orchestrate image/video processing, embedding generation, similarity check
+    - Calculate and include processing time in response
+    - Format response with status, matches, and processingTime
+    - _Requirements: 4.3, 4.4_
+  - [x] 7.3 Implement error handling middleware
+    - Handle unsupported format errors (400)
+    - Handle processing failures (500)
+    - Handle API rate limits (429)
+    - _Requirements: 1.4, 2.4_
+  - [ ]* 7.4 Write property tests for upload endpoint
+    - **Property 6: Frame-to-embedding consistency**
+    - **Property 13: Response structure validity**
+    - **Validates: Requirements 2.3, 4.3, 4.4**
+
+- [x] 8. Implement database seeding script
+  - [x] 8.1 Create seed script for copyrighted content
+    - Read all images from copyrighted-content directory
+    - Process each image and generate embedding
+    - Insert into copyrighted_content table with filename and content_type
+    - _Requirements: 5.1, 5.2_
+
+- [x] 9. Implement Next.js frontend
+  - [x] 9.1 Initialize Next.js application
+    - Create Next.js app in client/ directory
+    - Configure Tailwind CSS for styling
+    - _Requirements: 6.1_
+  - [x] 9.2 Create upload interface component
+    - Implement drag-and-drop file upload
+    - Accept image/* and video/mp4 file types
+    - Display loading indicator during processing
+    - _Requirements: 6.1, 6.2_
+  - [x] 9.3 Create results display component
+    - Display status with color coding (red for flagged, green for safe)
+    - Show processing time
+    - List matches with filename and similarity percentage
+    - _Requirements: 6.3, 6.4_
+
+- [x] 10. Final Checkpoint - Ensure all tests pass
+  - Ensure all tests pass, ask the user if questions arise.
