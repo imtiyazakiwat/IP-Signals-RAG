@@ -2,7 +2,9 @@
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.EmbeddingError = void 0;
 exports.getEmbeddingDimensions = getEmbeddingDimensions;
+exports.extractCelebrityName = extractCelebrityName;
 exports.generateEmbedding = generateEmbedding;
+exports.generateEmbeddingWithDescription = generateEmbeddingWithDescription;
 exports.serializeEmbedding = serializeEmbedding;
 exports.deserializeEmbedding = deserializeEmbedding;
 const inference_1 = require("@huggingface/inference");
@@ -51,11 +53,44 @@ async function generateClipEmbedding(imageBuffer, apiKey) {
     throw new EmbeddingError('Unexpected response format from CLIP API');
 }
 /**
+ * Face-focused prompt for person identification.
+ * Ignores clothing, background, pose - focuses ONLY on permanent facial features.
+ */
+const FACE_IDENTIFICATION_PROMPT = `FACE IDENTIFICATION TASK - IGNORE EVERYTHING EXCEPT THE FACE.
+
+You are a facial recognition system. Analyze ONLY the face in this image.
+
+COMPLETELY IGNORE:
+- Clothing, accessories, jewelry
+- Background, location, setting
+- Pose, camera angle, lighting
+- Image quality, filters
+
+ANALYZE ONLY THESE PERMANENT FACIAL FEATURES:
+1. IDENTITY: If this is a celebrity or public figure, state their FULL NAME first
+2. FACE SHAPE: oval, round, square, heart, oblong
+3. FOREHEAD: height, width, hairline shape
+4. EYEBROWS: shape, thickness, arch, spacing
+5. EYES: shape (almond, round, hooded), size, spacing, color
+6. NOSE: length, width, bridge shape, tip shape, nostril size
+7. CHEEKBONES: prominence, position
+8. LIPS: fullness, shape, cupid's bow
+9. JAW & CHIN: jawline shape, chin prominence, width
+10. EARS: size, shape, position (if visible)
+11. SKIN: tone, texture, any permanent marks (moles, scars, birthmarks)
+12. FACIAL HAIR: beard/mustache pattern (if any)
+13. DISTINCTIVE FEATURES: dimples, cleft chin, unique characteristics
+
+Output format:
+CELEBRITY: [Name if recognized, otherwise "Unknown"]
+FACE_FINGERPRINT: [Detailed description of permanent facial features only]`;
+/**
  * Generate a detailed description of an image using Gemini Vision.
+ * Uses a face-focused prompt to capture permanent identifying features.
  */
 async function describeImageWithGemini(imageBuffer, apiKey) {
     const base64Image = imageBuffer.toString('base64');
-    const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${apiKey}`, {
+    const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${apiKey}`, {
         method: 'POST',
         headers: {
             'Content-Type': 'application/json',
@@ -65,7 +100,7 @@ async function describeImageWithGemini(imageBuffer, apiKey) {
                 {
                     parts: [
                         {
-                            text: 'Describe this image in detail for copyright comparison. Include: main subjects, colors, composition, style, any text visible, distinctive features, and overall mood. Be specific and thorough.',
+                            text: FACE_IDENTIFICATION_PROMPT,
                         },
                         {
                             inlineData: {
@@ -78,7 +113,7 @@ async function describeImageWithGemini(imageBuffer, apiKey) {
             ],
             generationConfig: {
                 temperature: 0.1,
-                maxOutputTokens: 500,
+                maxOutputTokens: 600,
             },
         }),
     });
@@ -92,6 +127,19 @@ async function describeImageWithGemini(imageBuffer, apiKey) {
         throw new EmbeddingError('No description generated from Gemini Vision');
     }
     return text;
+}
+/**
+ * Extract celebrity name from Gemini response if identified.
+ */
+function extractCelebrityName(description) {
+    const match = description.match(/CELEBRITY:\s*([^\n]+)/i);
+    if (match && match[1]) {
+        const name = match[1].trim();
+        if (name.toLowerCase() !== 'unknown' && name.toLowerCase() !== 'none' && name.length > 2) {
+            return name;
+        }
+    }
+    return null;
 }
 /**
  * Generate text embedding using Gemini embedding model.
@@ -129,6 +177,14 @@ async function generateGeminiEmbedding(imageBuffer, apiKey) {
     // Step 2: Generate embedding from the description
     const embedding = await generateTextEmbedding(description, apiKey);
     return embedding;
+}
+/**
+ * Generate embedding AND return the description (for celebrity name extraction).
+ */
+async function generateGeminiEmbeddingWithDescription(imageBuffer, apiKey) {
+    const description = await describeImageWithGemini(imageBuffer, apiKey);
+    const embedding = await generateTextEmbedding(description, apiKey);
+    return { embedding, description };
 }
 /**
  * Generate a vector embedding from an image buffer.
@@ -170,6 +226,24 @@ async function generateEmbedding(imageBuffer, config) {
         }
     }
     throw new EmbeddingError('All embedding APIs failed');
+}
+/**
+ * Generate embedding AND return description for celebrity name extraction.
+ * This is used when we need both the embedding and the raw description.
+ */
+async function generateEmbeddingWithDescription(imageBuffer, config) {
+    const geminiKey = config?.geminiApiKey || process.env.GEMINI_API_KEY;
+    if (!geminiKey) {
+        // Fall back to regular embedding without description
+        const embedding = await generateEmbedding(imageBuffer, config);
+        return { embedding, description: '' };
+    }
+    try {
+        return await generateGeminiEmbeddingWithDescription(imageBuffer, geminiKey);
+    }
+    catch (error) {
+        throw new EmbeddingError(`Gemini embedding failed: ${error instanceof Error ? error.message : String(error)}`);
+    }
 }
 /**
  * Serialize an embedding vector to JSON string for storage.

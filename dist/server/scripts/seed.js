@@ -33,6 +33,7 @@ var __importStar = (this && this.__importStar) || (function () {
     };
 })();
 Object.defineProperty(exports, "__esModule", { value: true });
+require("dotenv/config");
 const fs = __importStar(require("fs"));
 const path = __importStar(require("path"));
 const db_1 = require("../db");

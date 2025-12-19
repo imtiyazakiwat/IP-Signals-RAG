@@ -11,6 +11,10 @@ export interface EmbeddingConfig {
  */
 export declare function getEmbeddingDimensions(config?: EmbeddingConfig): number;
 /**
+ * Extract celebrity name from Gemini response if identified.
+ */
+export declare function extractCelebrityName(description: string): string | null;
+/**
  * Generate a vector embedding from an image buffer.
  * Uses Google Gemini API as primary (Vision + Embedding), with Hugging Face CLIP as fallback.
  *
@@ -20,6 +24,14 @@ export declare function getEmbeddingDimensions(config?: EmbeddingConfig): number
  * @throws EmbeddingError if both APIs fail or no API keys are configured
  */
 export declare function generateEmbedding(imageBuffer: Buffer, config?: EmbeddingConfig): Promise<number[]>;
+/**
+ * Generate embedding AND return description for celebrity name extraction.
+ * This is used when we need both the embedding and the raw description.
+ */
+export declare function generateEmbeddingWithDescription(imageBuffer: Buffer, config?: EmbeddingConfig): Promise<{
+    embedding: number[];
+    description: string;
+}>;
 /**
  * Serialize an embedding vector to JSON string for storage.
  *

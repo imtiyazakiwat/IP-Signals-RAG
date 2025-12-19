@@ -50,14 +50,37 @@ function formatMatches(matches) {
 }
 /**
  * Process an image upload and check for similarity.
+ * Uses dual-matching: embedding similarity + celebrity name matching.
  */
 async function processImageUpload(buffer, mimeType) {
     // Process the image (resize, convert to JPEG)
     const processedImage = await (0, imageProcessor_1.processImage)(buffer, mimeType);
-    // Generate embedding
-    const embedding = await (0, embeddingService_1.generateEmbedding)(processedImage);
-    // Check similarity
-    return await (0, similarityChecker_1.checkSimilarity)(embedding);
+    // Generate embedding and get description for celebrity name extraction
+    const { embedding, description } = await (0, embeddingService_1.generateEmbeddingWithDescription)(processedImage);
+    // Check embedding similarity
+    const embeddingResult = await (0, similarityChecker_1.checkSimilarity)(embedding);
+    // Also check by celebrity name if identified
+    const celebrityName = (0, embeddingService_1.extractCelebrityName)(description);
+    let nameMatches = [];
+    if (celebrityName) {
+        console.log(`Celebrity identified: ${celebrityName}`);
+        nameMatches = await (0, similarityChecker_1.findByCelebrityName)(celebrityName);
+    }
+    // Merge matches, prioritizing name matches (more reliable for same person different photo)
+    const allMatches = [...nameMatches];
+    for (const match of embeddingResult.matches) {
+        if (!allMatches.some(m => m.id === match.id)) {
+            allMatches.push(match);
+        }
+    }
+    // Sort by similarity and limit
+    allMatches.sort((a, b) => b.similarity - a.similarity);
+    const topMatches = allMatches.slice(0, 3);
+    const isFlagged = topMatches.length > 0 && topMatches[0].similarity > 0.70;
+    return {
+        status: isFlagged ? 'flagged' : 'safe',
+        matches: topMatches,
+    };
 }
 /**
  * Process a video upload and check for similarity.

@@ -61,8 +61,82 @@ async function generateClipEmbedding(
 }
 
 /**
+ * Enhanced face-focused prompt for highly accurate person identification.
+ * Creates a biometric-style fingerprint that remains consistent across different photos.
+ */
+const FACE_IDENTIFICATION_PROMPT = `You are an expert biometric facial analysis system. Your task is to create a CONSISTENT facial identity signature that will match the SAME PERSON across different photos, regardless of:
+- Different clothing or accessories
+- Different backgrounds or settings  
+- Different poses, angles, or expressions
+- Different lighting or image quality
+- Different ages (within reason)
+
+CRITICAL: Focus ONLY on PERMANENT, UNCHANGEABLE facial structure.
+
+STEP 1 - CELEBRITY IDENTIFICATION (MOST IMPORTANT):
+If this person is a celebrity, public figure, athlete, actor, musician, politician, or any recognizable person, you MUST identify them by their FULL NAME. This is the primary identification method.
+
+Known celebrities to look for include but are not limited to:
+- Bollywood: Shah Rukh Khan, Amitabh Bachchan, Virat Kohli
+- Hollywood: Johnny Depp, Taylor Swift, Dua Lipa
+- Sports: Lionel Messi, Cristiano Ronaldo
+- Tech: Elon Musk
+- And any other recognizable public figure
+
+STEP 2 - BIOMETRIC FACIAL SIGNATURE:
+Analyze these PERMANENT bone structure and genetic features:
+
+SKULL STRUCTURE:
+- Overall face shape (oval/round/square/heart/oblong/diamond)
+- Face length-to-width ratio
+- Facial symmetry patterns
+
+UPPER FACE:
+- Forehead height and curvature
+- Brow ridge prominence
+- Hairline shape and position
+- Temple width
+
+EYE REGION:
+- Eye shape (almond/round/hooded/monolid/downturned/upturned)
+- Eye size relative to face
+- Inter-eye distance (close-set/average/wide-set)
+- Eye color
+- Orbital bone structure
+
+NOSE:
+- Bridge height and width
+- Nose length
+- Tip shape (bulbous/pointed/upturned/downturned)
+- Nostril shape and size
+- Nose-to-face proportion
+
+MOUTH REGION:
+- Lip fullness (thin/medium/full)
+- Lip shape and cupid's bow
+- Mouth width
+- Philtrum length and shape
+
+LOWER FACE:
+- Cheekbone prominence and position
+- Jawline shape (angular/rounded/square)
+- Chin shape (pointed/rounded/square/cleft)
+- Jaw width
+
+DISTINCTIVE MARKERS:
+- Permanent moles, birthmarks, scars
+- Dimples (cheek/chin)
+- Cleft chin
+- Unique asymmetries
+
+OUTPUT FORMAT (use exactly this format):
+CELEBRITY: [Full name if recognized, "Unknown" if not a public figure]
+BIOMETRIC_SIGNATURE: [Detailed description using ONLY the permanent features above, written as a continuous identifying description that would match this same person in any photo]`;
+
+
+/**
  * Generate a detailed description of an image using Gemini Vision.
- * Uses a highly specific prompt to capture unique identifying features.
+ * Uses a face-focused prompt to capture permanent identifying features.
  */
 async function describeImageWithGemini(
   imageBuffer: Buffer,
@@ -82,16 +156,7 @@ async function describeImageWithGemini(
           {
             parts: [
               {
-                text: `Analyze this image for unique identification. Provide a detailed fingerprint including:
-
-1. PERSON IDENTIFICATION (if any): Face shape, hair style/color, facial hair, skin tone, estimated age, distinctive facial features (nose shape, eye shape, jawline), expressions
-2. CLOTHING & ACCESSORIES: Exact colors, patterns, logos, text on clothing, jewelry, glasses, hats
-3. BACKGROUND: Specific location details, objects, text/signs visible, lighting conditions
-4. COMPOSITION: Camera angle, framing, pose, positioning of subjects
-5. UNIQUE IDENTIFIERS: Any text, numbers, logos, watermarks, specific objects that make this image unique
-6. IMAGE STYLE: Photo quality, filters, color grading, professional vs casual
-
-Be extremely specific about distinguishing features. If this is a celebrity, identify them by name. Focus on details that would differentiate this exact image from similar images.`,
+                text: FACE_IDENTIFICATION_PROMPT,
               },
               {
                 inlineData: {
@@ -104,7 +169,7 @@ Be extremely specific about distinguishing features. If this is a celebrity, ide
         ],
         generationConfig: {
           temperature: 0.1,
-          maxOutputTokens: 800,
+          maxOutputTokens: 600,
         },
       }),
     }
@@ -129,6 +194,38 @@ Be extremely specific about distinguishing features. If this is a celebrity, ide
   }
   
   return text;
+}
+
+/**
+ * Extract celebrity name from Gemini response if identified.
+ * Handles various response formats and cleans up the name.
+ */
+export function extractCelebrityName(description: string): string | null {
+  // Try multiple patterns to extract celebrity name
+  const patterns = [
+    /CELEBRITY:\s*([^\n]+)/i,
+    /IDENTITY:\s*([^\n]+)/i,
+    /NAME:\s*([^\n]+)/i,
+    /This is\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)+)/,
+    /recognized as\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)+)/i,
+  ];
+
+  for (const pattern of patterns) {
+    const match = description.match(pattern);
+    if (match && match[1]) {
+      let name = match[1].trim();
+      // Remove common suffixes/noise
+      name = name.replace(/[.,;:!?]$/, '').trim();
+      name = name.replace(/\s*\(.*?\)\s*/g, '').trim();
+      
+      // Validate it's a real name (not "Unknown", "None", etc.)
+      const invalidNames = ['unknown', 'none', 'not recognized', 'unidentified', 'n/a', 'not a celebrity'];
+      if (name.length > 2 && !invalidNames.includes(name.toLowerCase())) {
+        return name;
+      }
+    }
+  }
+  return null;
 }
 
 /**
@@ -186,6 +283,19 @@ async function generateGeminiEmbedding(
 }
 
 /**
+ * Generate embedding AND return the description (for celebrity name extraction).
+ */
+async function generateGeminiEmbeddingWithDescription(
+  imageBuffer: Buffer,
+  apiKey: string
+): Promise<{ embedding: number[]; description: string }> {
+  const description = await describeImageWithGemini(imageBuffer, apiKey);
+  const embedding = await generateTextEmbedding(description, apiKey);
+  
+  return { embedding, description };
+}
+
+/**
  * Generate a vector embedding from an image buffer.
  * Uses Google Gemini API as primary (Vision + Embedding), with Hugging Face CLIP as fallback.
  * 
@@ -235,6 +345,31 @@ export async function generateEmbedding(
   }
   
   throw new EmbeddingError('All embedding APIs failed');
+}
+
+/**
+ * Generate embedding AND return description for celebrity name extraction.
+ * This is used when we need both the embedding and the raw description.
+ */
+export async function generateEmbeddingWithDescription(
+  imageBuffer: Buffer,
+  config?: EmbeddingConfig
+): Promise<{ embedding: number[]; description: string }> {
+  const geminiKey = config?.geminiApiKey || process.env.GEMINI_API_KEY;
+  
+  if (!geminiKey) {
+    // Fall back to regular embedding without description
+    const embedding = await generateEmbedding(imageBuffer, config);
+    return { embedding, description: '' };
+  }
+  
+  try {
+    return await generateGeminiEmbeddingWithDescription(imageBuffer, geminiKey);
+  } catch (error) {
+    throw new EmbeddingError(
+      `Gemini embedding failed: ${error instanceof Error ? error.message : String(error)}`
+    );
+  }
 }
 
 /**

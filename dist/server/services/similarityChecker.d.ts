@@ -2,12 +2,18 @@ export interface SimilarityMatch {
     id: number;
     filename: string;
     similarity: number;
+    matchType?: 'embedding' | 'celebrity_name';
 }
 export type ContentStatus = 'flagged' | 'safe';
 export interface SimilarityResult {
     status: ContentStatus;
     matches: SimilarityMatch[];
 }
+/**
+ * Find content by celebrity name match.
+ * Searches filenames for celebrity name patterns.
+ */
+export declare function findByCelebrityName(celebrityName: string): Promise<SimilarityMatch[]>;
 /**
  * Find similar content in the database using pgvector cosine similarity.
  *

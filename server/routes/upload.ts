@@ -2,8 +2,8 @@ import { Router, Request, Response, NextFunction } from 'express';
 import multer from 'multer';
 import { processImage } from '../services/imageProcessor';
 import { extractKeyFrames } from '../services/videoProcessor';
-import { generateEmbedding } from '../services/embeddingService';
-import { checkSimilarity, SimilarityMatch } from '../services/similarityChecker';
+import { generateEmbedding, generateEmbeddingWithDescription, extractCelebrityName } from '../services/embeddingService';
+import { checkSimilarity, findByCelebrityName, SimilarityMatch } from '../services/similarityChecker';
 
 const router = Router();
 
@@ -61,6 +61,13 @@ function formatMatches(matches: SimilarityMatch[]): Array<{ filename: string; si
 
 /**
  * Process an image upload and check for similarity.
+ * Uses celebrity name matching as the PRIMARY method.
+ * 
+ * Logic:
+ * - If celebrity name is identified AND matches a file in DB -> FLAGGED
+ * - If celebrity name is identified but NO match in DB -> SAFE (person not in our protected list)
+ * - If no celebrity identified, fall back to embedding similarity with HIGH threshold (90%)
+ * - Otherwise -> SAFE
  */
 async function processImageUpload(buffer: Buffer, mimeType: string): Promise<{
   status: 'flagged' | 'safe';
@@ -69,16 +76,62 @@ async function processImageUpload(buffer: Buffer, mimeType: string): Promise<{
   // Process the image (resize, convert to JPEG)
   const processedImage = await processImage(buffer, mimeType);
   
-  // Generate embedding
-  const embedding = await generateEmbedding(processedImage);
+  // Generate embedding and get description for celebrity name extraction
+  const { embedding, description } = await generateEmbeddingWithDescription(processedImage);
   
-  // Check similarity
-  return await checkSimilarity(embedding);
+  // Extract celebrity name from the description
+  const celebrityName = extractCelebrityName(description);
+  console.log(`Celebrity identified: ${celebrityName || 'None'}`);
+  
+  // If a celebrity was identified, use name matching ONLY
+  if (celebrityName) {
+    const nameMatches = await findByCelebrityName(celebrityName);
+    console.log(`Name matches found: ${nameMatches.length}`);
+    
+    if (nameMatches.length > 0) {
+      // Celebrity found in our protected database
+      return {
+        status: 'flagged',
+        matches: nameMatches.slice(0, 3),
+      };
+    }
+    
+    // Celebrity identified but NOT in our database = SAFE
+    // This prevents Dhoni from matching Kohli just because they look similar
+    console.log(`Celebrity "${celebrityName}" not in protected database - marking as safe`);
+    return {
+      status: 'safe',
+      matches: [],
+    };
+  }
+  
+  // No celebrity identified - fall back to embedding similarity
+  // Use very high threshold (90%) to avoid false positives
+  const embeddingResult = await checkSimilarity(embedding, 0.90);
+  
+  if (embeddingResult.status === 'flagged' && embeddingResult.matches.length > 0) {
+    return {
+      status: 'flagged',
+      matches: embeddingResult.matches,
+    };
+  }
+  
+  // No confident match found - return safe
+  return {
+    status: 'safe',
+    matches: [],
+  };
 }
 
 /**
  * Process a video upload and check for similarity.
- * Extracts key frames and checks each for similarity.
+ * Extracts key frames and uses celebrity name matching with CONSENSUS requirement.
+ * 
+ * Logic:
+ * - Extract frames from video
+ * - For each frame, identify celebrity name
+ * - Only flag if the SAME protected celebrity is identified in MULTIPLE frames (>=2)
+ * - This prevents false positives from single-frame misidentification
  */
 async function processVideoUpload(buffer: Buffer): Promise<{
   status: 'flagged' | 'safe';
@@ -86,37 +139,74 @@ async function processVideoUpload(buffer: Buffer): Promise<{
 }> {
   // Extract key frames
   const frames = await extractKeyFrames(buffer);
+  console.log(`Extracted ${frames.length} frames from video`);
   
-  // Process each frame and collect all matches
-  const allMatches: SimilarityMatch[] = [];
-  let isFlagged = false;
+  // Track how many times each protected celebrity is identified
+  const celebrityCount: Map<string, { count: number; matches: SimilarityMatch[] }> = new Map();
   
-  for (const frame of frames) {
-    // Generate embedding for each frame
-    const embedding = await generateEmbedding(frame);
+  for (let i = 0; i < frames.length; i++) {
+    const frame = frames[i];
+    console.log(`Processing frame ${i + 1}/${frames.length}`);
     
-    // Check similarity
-    const result = await checkSimilarity(embedding);
+    // Generate embedding and get description for celebrity name extraction
+    const { description } = await generateEmbeddingWithDescription(frame);
     
-    if (result.status === 'flagged') {
-      isFlagged = true;
-    }
+    // Extract celebrity name from the description
+    const celebrityName = extractCelebrityName(description);
+    console.log(`Frame ${i + 1} - Celebrity identified: ${celebrityName || 'None'}`);
     
-    // Collect unique matches (by id)
-    for (const match of result.matches) {
-      if (!allMatches.some(m => m.id === match.id)) {
-        allMatches.push(match);
+    if (celebrityName) {
+      // Check if this celebrity is in our protected database
+      const nameMatches = await findByCelebrityName(celebrityName);
+      
+      if (nameMatches.length > 0) {
+        // Celebrity found in our protected database - increment count
+        const existing = celebrityCount.get(celebrityName);
+        if (existing) {
+          existing.count++;
+        } else {
+          celebrityCount.set(celebrityName, { count: 1, matches: nameMatches });
+        }
+        console.log(`Protected celebrity "${celebrityName}" found (count: ${celebrityCount.get(celebrityName)?.count})`);
+      } else {
+        console.log(`Celebrity "${celebrityName}" not in protected database`);
       }
     }
   }
   
-  // Sort by similarity descending and limit to top 3
-  allMatches.sort((a, b) => b.similarity - a.similarity);
-  const topMatches = allMatches.slice(0, 3);
+  // Only flag if a protected celebrity was identified in at least 2 frames (consensus)
+  // This prevents false positives from single-frame hallucinations
+  const MIN_FRAMES_FOR_CONSENSUS = 2;
   
+  const confirmedMatches: SimilarityMatch[] = [];
+  const confirmedCelebrities: string[] = [];
+  
+  for (const [name, data] of celebrityCount.entries()) {
+    if (data.count >= MIN_FRAMES_FOR_CONSENSUS) {
+      confirmedCelebrities.push(name);
+      for (const match of data.matches) {
+        if (!confirmedMatches.some(m => m.id === match.id)) {
+          confirmedMatches.push(match);
+        }
+      }
+    } else {
+      console.log(`Celebrity "${name}" only found in ${data.count} frame(s) - not enough for consensus`);
+    }
+  }
+  
+  if (confirmedMatches.length > 0) {
+    console.log(`Confirmed protected celebrities (>=2 frames): ${confirmedCelebrities.join(', ')}`);
+    return {
+      status: 'flagged',
+      matches: confirmedMatches.slice(0, 3),
+    };
+  }
+  
+  // No confirmed protected celebrities found - return safe
+  console.log('No protected celebrities confirmed in video (need >=2 frames)');
   return {
-    status: isFlagged ? 'flagged' : 'safe',
-    matches: topMatches,
+    status: 'safe',
+    matches: [],
   };
 }
 

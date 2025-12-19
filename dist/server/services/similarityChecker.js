@@ -1,11 +1,39 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
+exports.findByCelebrityName = findByCelebrityName;
 exports.findSimilarContent = findSimilarContent;
 exports.determineStatus = determineStatus;
 exports.checkSimilarity = checkSimilarity;
 const db_1 = require("../db");
-const DEFAULT_THRESHOLD = 0.85;
+// Lower threshold for face-based matching (face embeddings are more discriminative)
+const DEFAULT_THRESHOLD = 0.70;
 const MAX_RESULTS = 3;
+/**
+ * Find content by celebrity name match.
+ * Searches filenames for celebrity name patterns.
+ */
+async function findByCelebrityName(celebrityName) {
+    if (!celebrityName)
+        return [];
+    const client = await db_1.pool.connect();
+    try {
+        // Normalize name for matching (e.g., "Taylor Swift" -> "taylor_swift" or "taylor-swift")
+        const nameParts = celebrityName.toLowerCase().split(/\s+/);
+        const searchPatterns = nameParts.map(part => `%${part}%`);
+        // Build dynamic query for multiple name parts
+        const conditions = searchPatterns.map((_, i) => `LOWER(filename) LIKE $${i + 1}`).join(' AND ');
+        const result = await client.query(`SELECT id, filename FROM copyrighted_content WHERE ${conditions} LIMIT $${searchPatterns.length + 1}`, [...searchPatterns, MAX_RESULTS]);
+        return result.rows.map(row => ({
+            id: row.id,
+            filename: row.filename,
+            similarity: 0.95, // High confidence for name match
+            matchType: 'celebrity_name',
+        }));
+    }
+    finally {
+        client.release();
+    }
+}
 /**
  * Find similar content in the database using pgvector cosine similarity.
  *

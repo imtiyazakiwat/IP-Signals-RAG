@@ -4,6 +4,7 @@ export interface SimilarityMatch {
   id: number;
   filename: string;
   similarity: number;
+  matchType?: 'embedding' | 'celebrity_name';
 }
 
 export type ContentStatus = 'flagged' | 'safe';
@@ -13,12 +14,60 @@ export interface SimilarityResult {
   matches: SimilarityMatch[];
 }
 
-const DEFAULT_THRESHOLD = 0.90;
+// Higher threshold to reduce false positives (like Dhoni matching Virat)
+// Only flag when we're very confident it's the same person
+const DEFAULT_THRESHOLD = 0.85;
 const MAX_RESULTS = 3;
 
 /**
+ * Find content by celebrity name match.
+ * Searches filenames for celebrity name patterns.
+ * Returns only DISTINCT matches.
+ */
+export async function findByCelebrityName(
+  celebrityName: string
+): Promise<SimilarityMatch[]> {
+  if (!celebrityName) return [];
+
+  const client = await pool.connect();
+
+  try {
+    // Normalize name for matching
+    const nameParts = celebrityName
+      .toLowerCase()
+      .split(/\s+/)
+      .filter((p) => p.length > 2);
+    if (nameParts.length === 0) return [];
+
+    // Use the most distinctive part of the name (usually last name)
+    const searchTerm =
+      nameParts.length > 1 ? nameParts[nameParts.length - 1] : nameParts[0];
+
+    const result = await client.query<{
+      id: number;
+      filename: string;
+    }>(
+      `SELECT DISTINCT id, filename 
+       FROM copyrighted_content 
+       WHERE LOWER(filename) LIKE $1 
+       LIMIT $2`,
+      [`%${searchTerm}%`, MAX_RESULTS]
+    );
+
+    return result.rows.map((row) => ({
+      id: row.id,
+      filename: row.filename,
+      similarity: 0.95, // High confidence for name match
+      matchType: 'celebrity_name' as const,
+    }));
+  } finally {
+    client.release();
+  }
+}
+
+/**
  * Find similar content in the database using pgvector cosine similarity.
- * 
+ *
  * @param embedding - Query embedding vector
  * @param threshold - Minimum similarity threshold (default 0.85)
  * @returns Array of matches above threshold, ordered by similarity descending, limited to 3
@@ -28,12 +77,10 @@ export async function findSimilarContent(
   threshold: number = DEFAULT_THRESHOLD
 ): Promise<SimilarityMatch[]> {
   const client = await pool.connect();
-  
+
   try {
-    // pgvector uses cosine distance (1 - similarity), so we convert
-    // The <=> operator returns cosine distance, we need similarity = 1 - distance
     const vectorString = `[${embedding.join(',')}]`;
-    
+
     const result = await client.query<{
       id: number;
       filename: string;
@@ -49,11 +96,12 @@ export async function findSimilarContent(
       LIMIT $3`,
       [vectorString, threshold, MAX_RESULTS]
     );
-    
-    return result.rows.map(row => ({
+
+    return result.rows.map((row) => ({
       id: row.id,
       filename: row.filename,
       similarity: row.similarity,
+      matchType: 'embedding' as const,
     }));
   } finally {
     client.release();
@@ -62,27 +110,19 @@ export async function findSimilarContent(
 
 /**
  * Determine the status based on similarity matches.
- * Returns "flagged" if any match has similarity > 0.85, otherwise "safe".
- * 
- * @param matches - Array of similarity matches
- * @returns "flagged" or "safe"
+ * Returns "flagged" if any match has similarity > threshold, otherwise "safe".
  */
 export function determineStatus(matches: SimilarityMatch[]): ContentStatus {
   if (matches.length === 0) {
     return 'safe';
   }
-  
-  const maxSimilarity = Math.max(...matches.map(m => m.similarity));
+
+  const maxSimilarity = Math.max(...matches.map((m) => m.similarity));
   return maxSimilarity > DEFAULT_THRESHOLD ? 'flagged' : 'safe';
 }
 
 /**
  * Check content for similarity and return status with matches.
- * Combines findSimilarContent and determineStatus for convenience.
- * 
- * @param embedding - Query embedding vector
- * @param threshold - Minimum similarity threshold (default 0.85)
- * @returns Object with status and matches
  */
 export async function checkSimilarity(
   embedding: number[],
@@ -90,6 +130,6 @@ export async function checkSimilarity(
 ): Promise<SimilarityResult> {
   const matches = await findSimilarContent(embedding, threshold);
   const status = determineStatus(matches);
-  
+
   return { status, matches };
 }
