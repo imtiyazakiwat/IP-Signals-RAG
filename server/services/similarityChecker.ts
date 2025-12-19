@@ -13,7 +13,7 @@ export interface SimilarityResult {
   matches: SimilarityMatch[];
 }
 
-const DEFAULT_THRESHOLD = 0.85;
+const DEFAULT_THRESHOLD = 0.90;
 const MAX_RESULTS = 3;
 
 /**

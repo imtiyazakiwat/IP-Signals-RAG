@@ -62,6 +62,7 @@ async function generateClipEmbedding(
 
 /**
  * Generate a detailed description of an image using Gemini Vision.
+ * Uses a highly specific prompt to capture unique identifying features.
  */
 async function describeImageWithGemini(
   imageBuffer: Buffer,
@@ -70,7 +71,7 @@ async function describeImageWithGemini(
   const base64Image = imageBuffer.toString('base64');
   
   const response = await fetch(
-    `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${apiKey}`,
+    `https://generativelanguage.googleapis.com/v1beta/models/gemini-3-flash-preview:generateContent?key=${apiKey}`,
     {
       method: 'POST',
       headers: {
@@ -81,7 +82,16 @@ async function describeImageWithGemini(
           {
             parts: [
               {
-                text: 'Describe this image in detail for copyright comparison. Include: main subjects, colors, composition, style, any text visible, distinctive features, and overall mood. Be specific and thorough.',
+                text: `Analyze this image for unique identification. Provide a detailed fingerprint including:
+
+1. PERSON IDENTIFICATION (if any): Face shape, hair style/color, facial hair, skin tone, estimated age, distinctive facial features (nose shape, eye shape, jawline), expressions
+2. CLOTHING & ACCESSORIES: Exact colors, patterns, logos, text on clothing, jewelry, glasses, hats
+3. BACKGROUND: Specific location details, objects, text/signs visible, lighting conditions
+4. COMPOSITION: Camera angle, framing, pose, positioning of subjects
+5. UNIQUE IDENTIFIERS: Any text, numbers, logos, watermarks, specific objects that make this image unique
+6. IMAGE STYLE: Photo quality, filters, color grading, professional vs casual
+
+Be extremely specific about distinguishing features. If this is a celebrity, identify them by name. Focus on details that would differentiate this exact image from similar images.`,
               },
               {
                 inlineData: {
@@ -94,7 +104,7 @@ async function describeImageWithGemini(
         ],
         generationConfig: {
           temperature: 0.1,
-          maxOutputTokens: 500,
+          maxOutputTokens: 800,
         },
       }),
     }
